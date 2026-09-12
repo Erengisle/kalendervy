@@ -20,7 +20,7 @@ const CONFIG = {
   visa: {                         // vad som ska stå om varje lektion
     tid: true,
     titel: true,
-    plats: true,
+    plats: false,
     beskrivning: false
   },
 
@@ -251,16 +251,37 @@ function hämtaLäsårsplan_(vecka, måndag) {
   if (!cfg.kalkylarkId) return tomt;
 
   const ss = SpreadsheetApp.openById(cfg.kalkylarkId);
+  const allaBlad = ss.getSheets();
+  let någonFlikHittad = false;
 
   for (let i = 0; i < cfg.flikar.length; i++) {
-    const blad = ss.getSheetByName(cfg.flikar[i]);
+    const blad = hittaFlik_(allaBlad, cfg.flikar[i]);
     if (!blad) continue;
+    någonFlikHittad = true;
 
     const värden = blad.getDataRange().getValues();
     const block = hittaVeckoblock_(värden, vecka, måndag);
     if (block) return läsBlock_(värden, block);
   }
+
+  if (!någonFlikHittad) {
+    throw new Error('Hittar ingen av flikarna [' + cfg.flikar.join(', ') + '] i läsårsplanen. ' +
+      'Flikar som finns i kalkylarket: ' + allaBlad.map(function (b) { return b.getName(); }).join(', '));
+  }
   return tomt;
+}
+
+
+// Matchar flikNamn oavsett mellanslag och skiftläge, så att t.ex. "VT 2026"
+// och "VT2026" hittas — annars hoppade koden tyst vidare (continue) om
+// fliknamnet i CONFIG inte råkade stavas exakt som i kalkylarket.
+function hittaFlik_(allaBlad, flikNamn) {
+  const normalisera = function (s) { return String(s).replace(/\s+/g, ' ').trim().toLowerCase(); };
+  const mål = normalisera(flikNamn);
+  for (let i = 0; i < allaBlad.length; i++) {
+    if (normalisera(allaBlad[i].getName()) === mål) return allaBlad[i];
+  }
+  return null;
 }
 
 
