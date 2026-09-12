@@ -27,7 +27,7 @@ const CONFIG = {
   // ---- Läsårsplanen ----
   läsårsplan: {
     kalkylarkId: '1Y7AQG7Ny3Mb0Tm-XWLKCg8OexEHd3_2MM0LoxWh6DgA',
-    flikar: ['VT26', 'HT26', 'VT27'],
+    flikar: ['HT26', 'VT27'],
     placering: 'topp',            // 'topp' = ovanför lektionerna, 'botten' = under dem
     prefix: '',                   // t.ex. '» ' om du vill skilja dem från lektionerna
     veckonoteringar: true         // kolumnen längst till höger (Samverkan, APL, Beställningsperiod …) läggs överst i måndagskolumnen
