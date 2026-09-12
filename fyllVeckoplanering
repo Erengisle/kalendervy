@@ -1,0 +1,397 @@
+/**
+ * Fyller veckoplaneringen utifrån veckonumret i E1.
+ *
+ * Hämtar lektioner från Google Kalender och händelser från läsårsplanen,
+ * och skriver dem i dagkolumnerna. Formateringen rörs aldrig — skriptet
+ * rensar bara innehåll (clearContent), aldrig format.
+ *
+ * Installation:
+ *   1. Öppna "Tom veckoplanering" → Tillägg → Apps Script.
+ *   2. Klistra in koden, spara, ladda om kalkylarket.
+ *   3. Skriv veckonummer i E1 → menyn "Veckoplanering" → "Fyll veckan".
+ */
+
+const CONFIG = {
+
+  // ---- Kalendern ----
+  kalenderId: 'primary',          // 'primary' = din egen kalender
+  titelFilter: [],                // t.ex. ['SVA', 'Historia'] = bara händelser vars titel innehåller något av orden. Tom lista = alla.
+  taMedHeldagshändelser: false,
+  visa: {                         // vad som ska stå om varje lektion
+    tid: true,
+    titel: true,
+    plats: true,
+    beskrivning: false
+  },
+
+  // ---- Läsårsplanen ----
+  läsårsplan: {
+    kalkylarkId: '1Y7AQG7Ny3Mb0Tm-XWLKCg8OexEHd3_2MM0LoxWh6DgA',
+    flikar: ['HT2026', 'VT 2026'],
+    placering: 'topp',            // 'topp' = ovanför lektionerna, 'botten' = under dem
+    prefix: '',                   // t.ex. '» ' om du vill skilja dem från lektionerna
+    veckonoteringar: true         // kolumnen längst till höger (Samverkan, APL, Beställningsperiod …) läggs överst i måndagskolumnen
+  },
+
+  // ---- Mallens uppbyggnad (ändra bara om du flyttar saker i bladet) ----
+  blad: {
+    namn: '',                     // tomt = den aktiva fliken
+    vecka: 'E1',
+    år: 'E2',
+    måndagsdatum: 'F1',
+    rubrik: 'A1',
+    datumintervall: 'A2',
+    veckodagsrad: 3,
+    förstaRad: 4,
+    sistaRad: 16,
+    förstaKolumn: 1,
+    antalDagar: 5
+  }
+};
+
+const VECKODAGAR = ['Måndag', 'Tisdag', 'Onsdag', 'Torsdag', 'Fredag'];
+const MÅNADSNAMN = ['januari', 'februari', 'mars', 'april', 'maj', 'juni',
+                    'juli', 'augusti', 'september', 'oktober', 'november', 'december'];
+const MÅNADSKORT = {
+  jan: 1, feb: 2, mar: 3, mars: 3, apr: 4, maj: 5, jun: 6, juni: 6,
+  jul: 7, juli: 7, aug: 8, sep: 9, sept: 9, okt: 10, nov: 11, dec: 12
+};
+
+
+/* ============================ Meny ============================ */
+
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('Veckoplanering')
+    .addItem('Fyll veckan', 'fyllVeckan')
+    .addItem('Rensa dagkolumnerna', 'rensaVeckan')
+    .addSeparator()
+    .addItem('Aktivera automatisk ifyllning', 'aktiveraAutomatik')
+    .addItem('Stäng av automatisk ifyllning', 'stängAvAutomatik')
+    .addToUi();
+}
+
+
+/* ============================ Huvudflöde ============================ */
+
+function fyllVeckan(blad) {
+  const b = blad || hämtaBlad_();
+  const c = CONFIG.blad;
+
+  const vecka = parseInt(b.getRange(c.vecka).getValue(), 10);
+  if (!vecka || vecka < 1 || vecka > 53) {
+    throw new Error('Skriv ett veckonummer i ' + c.vecka + ' först.');
+  }
+
+  const årVärde = parseInt(b.getRange(c.år).getValue(), 10);
+  const år = årVärde || new Date().getFullYear();
+  const måndag = måndagFörVecka_(vecka, år);
+
+  skrivRubriker_(b, vecka, år, måndag);
+
+  const lektioner = hämtaLektioner_(måndag);
+  const plan = hämtaLäsårsplan_(vecka, måndag);
+
+  const kolumner = [];
+  for (let d = 0; d < c.antalDagar; d++) {
+    const fråKalender = lektioner[d];
+    const fråPlan = plan.dagar[d].map(function (t) { return CONFIG.läsårsplan.prefix + t; });
+    let poster = CONFIG.läsårsplan.placering === 'botten'
+      ? fråKalender.concat(fråPlan)
+      : fråPlan.concat(fråKalender);
+
+    if (d === 0 && CONFIG.läsårsplan.veckonoteringar && plan.veckonoteringar.length) {
+      poster = plan.veckonoteringar.map(function (t) { return CONFIG.läsårsplan.prefix + t; }).concat(poster);
+    }
+    kolumner.push(poster);
+  }
+
+  skrivDagkolumner_(b, kolumner);
+
+  const antal = lektioner.reduce(function (s, d) { return s + d.length; }, 0);
+  SpreadsheetApp.getActiveSpreadsheet().toast(
+    'Vecka ' + vecka + ': ' + antal + ' lektioner' + (plan.hittad ? ' + läsårsplanen' : ' (ingen matchande vecka i läsårsplanen)') + '.',
+    'Klart', 5);
+}
+
+
+function rensaVeckan() {
+  const b = hämtaBlad_();
+  const c = CONFIG.blad;
+  b.getRange(c.förstaRad, c.förstaKolumn, c.sistaRad - c.förstaRad + 1, c.antalDagar).clearContent();
+}
+
+
+/* ============================ Skriva i bladet ============================ */
+
+function skrivRubriker_(blad, vecka, år, måndag) {
+  const c = CONFIG.blad;
+  const fredag = nyDag_(måndag, 4);
+
+  sättOmEjFormel_(blad.getRange(c.rubrik), 'Veckoplanering – vecka ' + vecka);
+  sättOmEjFormel_(blad.getRange(c.datumintervall),
+    måndag.getDate() + ' ' + MÅNADSNAMN[måndag.getMonth()] + ' – ' +
+    fredag.getDate() + ' ' + MÅNADSNAMN[fredag.getMonth()] + ' ' + fredag.getFullYear());
+  sättOmEjFormel_(blad.getRange(c.måndagsdatum), måndag);
+  sättOmEjFormel_(blad.getRange(c.år), år);
+
+  const rubriker = [];
+  for (let d = 0; d < c.antalDagar; d++) {
+    const dag = nyDag_(måndag, d);
+    rubriker.push(VECKODAGAR[d] + '  ' + dag.getDate() + '/' + (dag.getMonth() + 1));
+  }
+  const rad = blad.getRange(c.veckodagsrad, c.förstaKolumn, 1, c.antalDagar);
+  if (rad.getFormulas()[0].join('') === '') rad.setValues([rubriker]);
+}
+
+
+function skrivDagkolumner_(blad, kolumner) {
+  const c = CONFIG.blad;
+  const antalRader = c.sistaRad - c.förstaRad + 1;
+  const område = blad.getRange(c.förstaRad, c.förstaKolumn, antalRader, c.antalDagar);
+  område.clearContent();
+
+  let trångt = false;
+  const rutnät = [];
+  for (let r = 0; r < antalRader; r++) {
+    const rad = [];
+    for (let d = 0; d < c.antalDagar; d++) {
+      const poster = kolumner[d];
+      if (r < antalRader - 1) {
+        rad.push(poster[r] || '');
+      } else if (poster.length > antalRader) {
+        trångt = true;
+        rad.push(poster.slice(antalRader - 1).join(' / '));   // det som inte får plats slås ihop på sista raden
+      } else {
+        rad.push(poster[r] || '');
+      }
+    }
+    rutnät.push(rad);
+  }
+  område.setValues(rutnät);
+
+  if (trångt) {
+    SpreadsheetApp.getActiveSpreadsheet().toast(
+      'Någon dag hade fler poster än ' + antalRader + ' rader. Överskottet ligger ihopslaget på sista raden.',
+      'Obs', 8);
+  }
+}
+
+
+function sättOmEjFormel_(cell, värde) {
+  if (cell.getFormula() === '') cell.setValue(värde);
+}
+
+
+/* ============================ Kalendern ============================ */
+
+function hämtaLektioner_(måndag) {
+  const kalender = CONFIG.kalenderId === 'primary'
+    ? CalendarApp.getDefaultCalendar()
+    : CalendarApp.getCalendarById(CONFIG.kalenderId);
+  if (!kalender) throw new Error('Hittar ingen kalender med id: ' + CONFIG.kalenderId);
+
+  const dagar = [];
+  for (let d = 0; d < CONFIG.blad.antalDagar; d++) {
+    const start = nyDag_(måndag, d);
+    const slut = nyDag_(måndag, d + 1);
+
+    const poster = kalender.getEvents(start, slut)
+      .filter(function (e) { return CONFIG.taMedHeldagshändelser || !e.isAllDayEvent(); })
+      .filter(function (e) { return matcharFilter_(e.getTitle()); })
+      .sort(function (a, b) { return a.getStartTime() - b.getStartTime(); })
+      .map(formateraLektion_);
+
+    dagar.push(poster);
+  }
+  return dagar;
+}
+
+
+function matcharFilter_(titel) {
+  if (!CONFIG.titelFilter.length) return true;
+  const t = String(titel).toLowerCase();
+  return CONFIG.titelFilter.some(function (ord) { return t.indexOf(String(ord).toLowerCase()) !== -1; });
+}
+
+
+function formateraLektion_(e) {
+  const v = CONFIG.visa;
+  const delar = [];
+
+  if (v.tid && !e.isAllDayEvent()) {
+    delar.push(klockslag_(e.getStartTime()) + '–' + klockslag_(e.getEndTime()));
+  }
+  if (v.titel) delar.push(e.getTitle());
+
+  let text = delar.join(' ');
+  if (v.plats && e.getLocation()) text += ' (' + e.getLocation() + ')';
+  if (v.beskrivning && e.getDescription()) {
+    text += ' – ' + String(e.getDescription()).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  return text.trim();
+}
+
+
+function klockslag_(datum) {
+  return Utilities.formatDate(datum, Session.getScriptTimeZone(), 'HH:mm');
+}
+
+
+/* ============================ Läsårsplanen ============================ */
+
+/**
+ * Läsårsplanen är ett kalendarium: ett block per vecka, veckonumret i kolumn A,
+ * och varje veckodag upptar två kolumner (datum i den vänstra, noteringar i båda).
+ * Blocket hittas via veckonumret och kontrolleras mot måndagens datum.
+ */
+function hämtaLäsårsplan_(vecka, måndag) {
+  const tomt = { hittad: false, dagar: [[], [], [], [], []], veckonoteringar: [] };
+  const cfg = CONFIG.läsårsplan;
+  if (!cfg.kalkylarkId) return tomt;
+
+  const ss = SpreadsheetApp.openById(cfg.kalkylarkId);
+
+  for (let i = 0; i < cfg.flikar.length; i++) {
+    const blad = ss.getSheetByName(cfg.flikar[i]);
+    if (!blad) continue;
+
+    const värden = blad.getDataRange().getValues();
+    const block = hittaVeckoblock_(värden, vecka, måndag);
+    if (block) return läsBlock_(värden, block);
+  }
+  return tomt;
+}
+
+
+function hittaVeckoblock_(värden, vecka, måndag) {
+  const datumrader = [];
+  for (let r = 0; r < värden.length; r++) {
+    const kolumner = datumkolumner_(värden[r]);
+    if (Object.keys(kolumner).length >= 3) datumrader.push({ rad: r, dagar: kolumner });
+  }
+
+  for (let i = 0; i < datumrader.length; i++) {
+    const start = datumrader[i].rad;
+    const slut = (i + 1 < datumrader.length ? datumrader[i + 1].rad : värden.length) - 1;
+
+    let veckonr = null;
+    for (let r = start; r <= slut; r++) {
+      const v = parseInt(String(värden[r][0]).trim(), 10);
+      if (v >= 1 && v <= 53 && String(värden[r][0]).trim() === String(v)) { veckonr = v; break; }
+    }
+    if (veckonr !== vecka) continue;
+
+    // kontroll: första datumet i blocket ska vara måndagens datum
+    const kolumner = Object.keys(datumrader[i].dagar).map(Number).sort(function (a, b) { return a - b; });
+    const första = datumrader[i].dagar[kolumner[0]];
+    if (första.dag !== måndag.getDate() || första.månad !== måndag.getMonth() + 1) continue;
+
+    return { start: start, slut: slut, dagkolumner: kolumner };
+  }
+  return null;
+}
+
+
+function datumkolumner_(rad) {
+  const träffar = {};
+  for (let c = 0; c < rad.length; c++) {
+    const m = String(rad[c]).trim().toLowerCase().match(/^(\d{1,2})\s*([a-zåäö]+)\.?$/);
+    if (!m) continue;
+    const månad = MÅNADSKORT[m[2]];
+    if (månad) träffar[c] = { dag: parseInt(m[1], 10), månad: månad };
+  }
+  return träffar;
+}
+
+
+function läsBlock_(värden, block) {
+  const dagar = [];
+  const sistaDagkolumn = block.dagkolumner[block.dagkolumner.length - 1];
+
+  for (let d = 0; d < 5; d++) {
+    const kol = block.dagkolumner[d];
+    const poster = [];
+    if (kol !== undefined) {
+      for (let r = block.start; r <= block.slut; r++) {
+        for (let k = kol; k <= kol + 1; k++) {
+          if (r === block.start && k === kol) continue;   // själva datumcellen
+          lägTill_(poster, värden[r][k]);
+        }
+      }
+    }
+    dagar.push(poster);
+  }
+
+  const veckonoteringar = [];
+  for (let r = block.start; r <= block.slut; r++) {
+    // A/B-vecka står i kolumn A
+    const a = String(värden[r][0]).trim();
+    if (/^[AB]-vecka$/i.test(a)) lägTill_(veckonoteringar, a);
+    // noteringskolumnerna ligger efter fredagsparet
+    for (let k = sistaDagkolumn + 2; k < värden[r].length; k++) lägTill_(veckonoteringar, värden[r][k]);
+  }
+
+  return { hittad: true, dagar: dagar, veckonoteringar: veckonoteringar };
+}
+
+
+function lägTill_(lista, värde) {
+  if (värde === null || värde === undefined) return;
+  const text = (värde instanceof Date)
+    ? Utilities.formatDate(värde, Session.getScriptTimeZone(), 'yyyy-MM-dd')
+    : String(värde).replace(/\s+/g, ' ').trim();
+  if (text && lista.indexOf(text) === -1) lista.push(text);
+}
+
+
+/* ============================ Automatik (valfritt) ============================ */
+
+function aktiveraAutomatik() {
+  stängAvAutomatik();
+  ScriptApp.newTrigger('vidRedigering_')
+    .forSpreadsheet(SpreadsheetApp.getActive())
+    .onEdit()
+    .create();
+  SpreadsheetApp.getActiveSpreadsheet().toast('Veckan fylls nu automatiskt när du ändrar ' + CONFIG.blad.vecka + '.', 'Klart', 5);
+}
+
+
+function stängAvAutomatik() {
+  ScriptApp.getProjectTriggers().forEach(function (t) {
+    if (t.getHandlerFunction() === 'vidRedigering_') ScriptApp.deleteTrigger(t);
+  });
+}
+
+
+function vidRedigering_(e) {
+  if (!e || !e.range) return;
+  if (e.range.getA1Notation() !== CONFIG.blad.vecka) return;
+  const blad = e.range.getSheet();
+  if (CONFIG.blad.namn && blad.getName() !== CONFIG.blad.namn) return;
+  fyllVeckan(blad);
+}
+
+
+/* ============================ Hjälpfunktioner ============================ */
+
+function hämtaBlad_() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!CONFIG.blad.namn) return ss.getActiveSheet();
+  const b = ss.getSheetByName(CONFIG.blad.namn);
+  if (!b) throw new Error('Hittar inget blad som heter "' + CONFIG.blad.namn + '".');
+  return b;
+}
+
+
+function måndagFörVecka_(vecka, år) {
+  const jan4 = new Date(år, 0, 4);
+  const dag = jan4.getDay() || 7;                 // ISO: måndag = 1
+  const måndagVecka1 = new Date(år, 0, 4 - (dag - 1));
+  return nyDag_(måndagVecka1, (vecka - 1) * 7);
+}
+
+
+function nyDag_(datum, antalDagar) {
+  return new Date(datum.getFullYear(), datum.getMonth(), datum.getDate() + antalDagar);
+}
