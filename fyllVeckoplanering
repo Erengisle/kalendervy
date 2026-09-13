@@ -58,11 +58,19 @@ const MÅNADSKORT = {
 };
 
 
-/* ============================ Meny ============================ */
+/* ============================ Meny ============================
+ * Projektet har även ett byggskript (skapaVeckoplanering m.fl.) i en
+ * egen fil. Den filens onOpen() måste tas bort helt — annars vinner
+ * bara den ena av de två menyerna tyst, utan felmeddelande.
+ * ============================================================== */
 
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('Veckoplanering')
+    .addItem('Skapa/återställ ark', 'skapaVeckoplanering')
+    .addItem('Ta bort vågräta linjer i skrivytan', 'taBortVagrataLinjer')
+    .addItem('Exportera som PDF (liggande)', 'exporteraPdfLiggande')
+    .addSeparator()
     .addItem('Fyll veckan', 'fyllVeckan')
     .addItem('Rensa dagkolumnerna', 'rensaVeckan')
     .addSeparator()
