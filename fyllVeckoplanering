@@ -230,12 +230,30 @@ function formateraLektion_(e) {
   if (v.tid && !e.isAllDayEvent()) {
     delar.push(klockslag_(e.getStartTime()) + '–' + klockslag_(e.getEndTime()));
   }
-  if (v.titel) delar.push(e.getTitle());
+  if (v.titel) delar.push(rensaRumsbokning_(e.getTitle()));
 
   let text = delar.join(' ');
   if (v.plats && e.getLocation()) text += ' (' + e.getLocation() + ')';
   if (v.beskrivning && e.getDescription()) {
     text += ' – ' + String(e.getDescription()).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+  return text.trim();
+}
+
+
+/**
+ * Skolans kalendersystem klistrar in rumsbokningen sist i titeln, t.ex.
+ * "SVEN1000X (SVA1NAB26) (4113, Widerströmska gymnasiet-1-4113 (32))".
+ * Den delen känns igen på att den innehåller en kapacitetssiffra i en
+ * egen parentes (t.ex. "(32)") — det gör aldrig kurs-/klasskoden. Bara
+ * den sista parentesgruppen tas bort om den matchar, resten av titeln
+ * (kurskod + klasskod) lämnas orörd.
+ */
+function rensaRumsbokning_(titel) {
+  const text = String(titel);
+  const sistaGrupp = text.match(/\((?:[^()]|\([^()]*\))*\)\s*$/);
+  if (sistaGrupp && /\(\d+\)/.test(sistaGrupp[0])) {
+    return text.slice(0, sistaGrupp.index).trim();
   }
   return text.trim();
 }
