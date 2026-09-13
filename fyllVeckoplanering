@@ -166,17 +166,17 @@ function skrivDagkolumner_(blad, kolumner) {
     for (let d = 0; d < c.antalDagar; d++) {
       const poster = kolumner[d];
       if (r < antalRader - 1) {
-        rad.push(poster[r] || '');
+        rad.push(tillRikText_(poster[r] || ''));
       } else if (poster.length > antalRader) {
         trångt = true;
-        rad.push(poster.slice(antalRader - 1).join(' / '));   // det som inte får plats slås ihop på sista raden
+        rad.push(tillRikText_(poster.slice(antalRader - 1).join(' / ')));   // det som inte får plats slås ihop på sista raden
       } else {
-        rad.push(poster[r] || '');
+        rad.push(tillRikText_(poster[r] || ''));
       }
     }
     rutnät.push(rad);
   }
-  område.setValues(rutnät);
+  område.setRichTextValues(rutnät);
 
   if (trångt) {
     SpreadsheetApp.getActiveSpreadsheet().toast(
@@ -188,6 +188,20 @@ function skrivDagkolumner_(blad, kolumner) {
 
 function sättOmEjFormel_(cell, värde) {
   if (cell.getFormula() === '') cell.setValue(värde);
+}
+
+
+// Gör klockslaget (t.ex. "08:20–09:20") fetstilat, resten av texten
+// i cellen lämnas som vanlig text.
+function tillRikText_(text) {
+  const byggare = SpreadsheetApp.newRichTextValue().setText(text);
+  const klockslagsmönster = /\d{2}:\d{2}–\d{2}:\d{2}/g;
+  let träff;
+  while ((träff = klockslagsmönster.exec(text)) !== null) {
+    byggare.setTextStyle(träff.index, träff.index + träff[0].length,
+      SpreadsheetApp.newTextStyle().setBold(true).build());
+  }
+  return byggare.build();
 }
 
 
