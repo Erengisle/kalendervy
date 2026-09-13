@@ -30,7 +30,7 @@ const CONFIG = {
     flikar: ['HT26', 'VT27'],
     placering: 'topp',            // 'topp' = ovanför lektionerna, 'botten' = under dem
     prefix: '',                   // t.ex. '» ' om du vill skilja dem från lektionerna
-    veckonoteringar: true         // kolumnen längst till höger (Samverkan, APL, Beställningsperiod …) läggs överst i måndagskolumnen
+    veckonoteringar: true         // kolumnen "Notering" (Samverkan, APL, Beställningsperiod …) skrivs till CONFIG.blad.veckonoteringar
   },
 
   // ---- Mallens uppbyggnad (ändra bara om du flyttar saker i bladet) ----
@@ -45,17 +45,14 @@ const CONFIG = {
     förstaRad: 4,
     sistaRad: 16,
     förstaKolumn: 1,
-    antalDagar: 5
+    antalDagar: 5,
+    veckonoteringar: 'A18'        // den sammanslagna cellen där läsårsplanens "Notering"-kolumn skrivs
   }
 };
 
 const VECKODAGAR = ['Måndag', 'Tisdag', 'Onsdag', 'Torsdag', 'Fredag'];
 const MÅNADSNAMN = ['januari', 'februari', 'mars', 'april', 'maj', 'juni',
                     'juli', 'augusti', 'september', 'oktober', 'november', 'december'];
-const MÅNADSKORT = {
-  jan: 1, feb: 2, mar: 3, mars: 3, apr: 4, maj: 5, jun: 6, juni: 6,
-  jul: 7, juli: 7, aug: 8, sep: 9, sept: 9, okt: 10, nov: 11, dec: 12
-};
 
 
 /* ============================ Meny ============================
@@ -104,17 +101,17 @@ function fyllVeckan(blad) {
   for (let d = 0; d < c.antalDagar; d++) {
     const fråKalender = lektioner[d];
     const fråPlan = plan.dagar[d].map(function (t) { return CONFIG.läsårsplan.prefix + t; });
-    let poster = CONFIG.läsårsplan.placering === 'botten'
+    const poster = CONFIG.läsårsplan.placering === 'botten'
       ? fråKalender.concat(fråPlan)
       : fråPlan.concat(fråKalender);
-
-    if (d === 0 && CONFIG.läsårsplan.veckonoteringar && plan.veckonoteringar.length) {
-      poster = plan.veckonoteringar.map(function (t) { return CONFIG.läsårsplan.prefix + t; }).concat(poster);
-    }
     kolumner.push(poster);
   }
 
   skrivDagkolumner_(b, kolumner);
+
+  if (CONFIG.läsårsplan.veckonoteringar && c.veckonoteringar) {
+    skrivVeckonoteringar_(b, plan.veckonoteringar);
+  }
 
   const antal = lektioner.reduce(function (s, d) { return s + d.length; }, 0);
   SpreadsheetApp.getActiveSpreadsheet().toast(
@@ -188,6 +185,16 @@ function skrivDagkolumner_(blad, kolumner) {
 
 function sättOmEjFormel_(cell, värde) {
   if (cell.getFormula() === '') cell.setValue(värde);
+}
+
+
+// Skriver läsårsplanens "Notering"-kolumn (sådant som gäller hela veckan
+// eller ännu inte har ett bestämt datum) till den egna cellen i CONFIG.blad.
+function skrivVeckonoteringar_(blad, noteringar) {
+  const text = noteringar
+    .map(function (t) { return CONFIG.läsårsplan.prefix + t; })
+    .join(' • ');
+  blad.getRange(CONFIG.blad.veckonoteringar).setValue(text);
 }
 
 
@@ -282,8 +289,11 @@ function klockslag_(datum) {
 
 /**
  * Läsårsplanen är ett kalendarium: ett block per vecka, veckonumret i kolumn A,
- * och varje veckodag upptar två kolumner (datum i den vänstra, noteringar i båda).
- * Blocket hittas via veckonumret och kontrolleras mot måndagens datum.
+ * och varje veckodag upptar två kolumner (riktigt datum i den vänstra,
+ * noteringar i båda). Blocket hittas via veckonumret och kontrolleras mot
+ * måndagens datum. Kolumnernas position läses av från rubrikraden
+ * ("Måndag", "Tisdag" … "Notering") istället för att antas vara fast,
+ * så att planen fortsätter fungera även om en kolumn flyttas.
  */
 function hämtaLäsårsplan_(vecka, måndag) {
   const tomt = { hittad: false, dagar: [[], [], [], [], []], veckonoteringar: [] };
@@ -300,8 +310,13 @@ function hämtaLäsårsplan_(vecka, måndag) {
     någonFlikHittad = true;
 
     const värden = blad.getDataRange().getValues();
-    const block = hittaVeckoblock_(värden, vecka, måndag);
-    if (block) return läsBlock_(värden, block);
+    const rubriker = hittaRubrikkolumner_(värden);
+    if (!rubriker) {
+      throw new Error('Hittar ingen rubrikrad med "Måndag" i fliken "' + blad.getName() + '" i läsårsplanen.');
+    }
+
+    const block = hittaVeckoblock_(värden, vecka, måndag, rubriker.dagkolumner);
+    if (block) return läsBlock_(värden, block, rubriker.dagkolumner, rubriker.noteringskolumn);
   }
 
   if (!någonFlikHittad) {
@@ -325,16 +340,40 @@ function hittaFlik_(allaBlad, flikNamn) {
 }
 
 
-function hittaVeckoblock_(värden, vecka, måndag) {
+// Hittar rubrikraden ("Måndag", "Tisdag" … "Notering") bland de första
+// raderna i bladet och läser av var dagarnas datumkolumner och
+// noteringskolumnen faktiskt ligger, istället för att anta fasta positioner.
+function hittaRubrikkolumner_(värden) {
+  for (let r = 0; r < Math.min(värden.length, 10); r++) {
+    const rad = värden[r].map(function (v) { return String(v).trim().toLowerCase(); });
+    const måndagIx = rad.indexOf('måndag');
+    if (måndagIx === -1) continue;
+
+    const dagkolumner = [0, 1, 2, 3, 4].map(function (d) { return måndagIx + d * 2; });
+    const noteringIx = rad.indexOf('notering');
+    return { dagkolumner: dagkolumner, noteringskolumn: noteringIx === -1 ? null : noteringIx };
+  }
+  return null;
+}
+
+
+// En "datumrad" är raden överst i varje veckoblock, där varje veckodags
+// kolumn innehåller ett riktigt datumvärde (inte text).
+function ärDatumrad_(rad, dagkolumner) {
+  const träffar = dagkolumner.filter(function (k) { return rad[k] instanceof Date; });
+  return träffar.length >= 3;
+}
+
+
+function hittaVeckoblock_(värden, vecka, måndag, dagkolumner) {
   const datumrader = [];
   for (let r = 0; r < värden.length; r++) {
-    const kolumner = datumkolumner_(värden[r]);
-    if (Object.keys(kolumner).length >= 3) datumrader.push({ rad: r, dagar: kolumner });
+    if (ärDatumrad_(värden[r], dagkolumner)) datumrader.push(r);
   }
 
   for (let i = 0; i < datumrader.length; i++) {
-    const start = datumrader[i].rad;
-    const slut = (i + 1 < datumrader.length ? datumrader[i + 1].rad : värden.length) - 1;
+    const start = datumrader[i];
+    const slut = (i + 1 < datumrader.length ? datumrader[i + 1] : värden.length) - 1;
 
     let veckonr = null;
     for (let r = start; r <= slut; r++) {
@@ -343,42 +382,33 @@ function hittaVeckoblock_(värden, vecka, måndag) {
     }
     if (veckonr !== vecka) continue;
 
-    // kontroll: första datumet i blocket ska vara måndagens datum
-    const kolumner = Object.keys(datumrader[i].dagar).map(Number).sort(function (a, b) { return a - b; });
-    const första = datumrader[i].dagar[kolumner[0]];
-    if (första.dag !== måndag.getDate() || första.månad !== måndag.getMonth() + 1) continue;
+    // kontroll: måndagens datum i blocket ska stämma med den efterfrågade måndagen
+    if (!sammaDag_(värden[start][dagkolumner[0]], måndag)) continue;
 
-    return { start: start, slut: slut, dagkolumner: kolumner };
+    return { start: start, slut: slut };
   }
   return null;
 }
 
 
-function datumkolumner_(rad) {
-  const träffar = {};
-  for (let c = 0; c < rad.length; c++) {
-    const m = String(rad[c]).trim().toLowerCase().match(/^(\d{1,2})\s*([a-zåäö]+)\.?$/);
-    if (!m) continue;
-    const månad = MÅNADSKORT[m[2]];
-    if (månad) träffar[c] = { dag: parseInt(m[1], 10), månad: månad };
-  }
-  return träffar;
+function sammaDag_(datum, måndag) {
+  return datum instanceof Date &&
+    datum.getFullYear() === måndag.getFullYear() &&
+    datum.getMonth() === måndag.getMonth() &&
+    datum.getDate() === måndag.getDate();
 }
 
 
-function läsBlock_(värden, block) {
+function läsBlock_(värden, block, dagkolumner, noteringskolumn) {
   const dagar = [];
-  const sistaDagkolumn = block.dagkolumner[block.dagkolumner.length - 1];
 
   for (let d = 0; d < 5; d++) {
-    const kol = block.dagkolumner[d];
+    const kol = dagkolumner[d];
     const poster = [];
-    if (kol !== undefined) {
-      for (let r = block.start; r <= block.slut; r++) {
-        for (let k = kol; k <= kol + 1; k++) {
-          if (r === block.start && k === kol) continue;   // själva datumcellen
-          lägTill_(poster, värden[r][k]);
-        }
+    for (let r = block.start; r <= block.slut; r++) {
+      for (let k = kol; k <= kol + 1; k++) {
+        if (r === block.start && k === kol) continue;   // själva datumcellen
+        lägTill_(poster, värden[r][k]);
       }
     }
     dagar.push(poster);
@@ -389,8 +419,7 @@ function läsBlock_(värden, block) {
     // A/B-vecka står i kolumn A
     const a = String(värden[r][0]).trim();
     if (/^[AB]-vecka$/i.test(a)) lägTill_(veckonoteringar, a);
-    // noteringskolumnerna ligger efter fredagsparet
-    for (let k = sistaDagkolumn + 2; k < värden[r].length; k++) lägTill_(veckonoteringar, värden[r][k]);
+    if (noteringskolumn !== null) lägTill_(veckonoteringar, värden[r][noteringskolumn]);
   }
 
   return { hittad: true, dagar: dagar, veckonoteringar: veckonoteringar };
