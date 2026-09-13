@@ -449,27 +449,31 @@ function lägTill_(lista, värde) {
 
 function aktiveraAutomatik() {
   stängAvAutomatik();
-  ScriptApp.newTrigger('vidRedigering_')
-    .forSpreadsheet(SpreadsheetApp.getActive())
-    .onEdit()
+  const kalenderId = CONFIG.kalenderId === 'primary'
+    ? CalendarApp.getDefaultCalendar().getId()
+    : CONFIG.kalenderId;
+  ScriptApp.newTrigger('vidKalenderändring_')
+    .forUserCalendar(kalenderId)
+    .onEventUpdated()
     .create();
-  SpreadsheetApp.getActiveSpreadsheet().toast('Veckan fylls nu automatiskt när du ändrar ' + CONFIG.blad.vecka + '.', 'Klart', 5);
+  SpreadsheetApp.getActiveSpreadsheet().toast('Veckan fylls nu automatiskt i när kalendern ändras.', 'Klart', 5);
 }
 
 
 function stängAvAutomatik() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
-    if (t.getHandlerFunction() === 'vidRedigering_') ScriptApp.deleteTrigger(t);
+    if (t.getHandlerFunction() === 'vidKalenderändring_') ScriptApp.deleteTrigger(t);
   });
 }
 
 
-function vidRedigering_(e) {
-  if (!e || !e.range) return;
-  if (e.range.getA1Notation() !== CONFIG.blad.vecka) return;
-  const blad = e.range.getSheet();
-  if (CONFIG.blad.namn && blad.getName() !== CONFIG.blad.namn) return;
-  fyllVeckan(blad);
+// Kalendertriggern talar inte om vilken händelse som ändrades, bara att
+// något gjorde det - så veckan som redan står i E1 fylls om på nytt.
+// Utan CONFIG.blad.namn används getActiveSheet(), vilket i en bakgrunds-
+// trigger kan bli fel blad om kalkylarket har flera flikar öppna; sätt
+// CONFIG.blad.namn till t.ex. 'Veckoplanering' för säkerhets skull.
+function vidKalenderändring_(e) {
+  fyllVeckan();
 }
 
 
